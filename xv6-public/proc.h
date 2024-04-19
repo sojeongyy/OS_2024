@@ -55,7 +55,6 @@ struct proc {
   int current_tick;
   struct proc *next;
   int inMoQ; //is this process in MoQ??
-  int before_level; //used in queue.. level before pushed in MoQ
 };
 
 // Process memory is laid out contiguously, low addresses first:
