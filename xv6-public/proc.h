@@ -49,6 +49,13 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  
+  int priority; //0~10
+  int queue_level;
+  int current_tick;
+  struct proc *next;
+  int inMoQ; //is this process in MoQ??
+  int before_level; //used in queue.. level before pushed in MoQ
 };
 
 // Process memory is laid out contiguously, low addresses first:
@@ -56,3 +63,6 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
+
+void priority_boosting(void);
+

@@ -22,7 +22,7 @@ tvinit(void)
   for(i = 0; i < 256; i++)
     SETGATE(idt[i], 0, SEG_KCODE<<3, vectors[i], 0);
   SETGATE(idt[T_SYSCALL], 1, SEG_KCODE<<3, vectors[T_SYSCALL], DPL_USER);
-
+  SETGATE(idt[128], 1, SEG_KCODE<<3, vectors[128], DPL_USER);
   initlock(&tickslock, "time");
 }
 
@@ -45,12 +45,26 @@ trap(struct trapframe *tf)
       exit();
     return;
   }
+  if(tf->trapno == 128){
+	cprintf("user interrupt 128 called\n");
+	exit();
+  }
 
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
+      if(ticks >= 100)
+      {
+	//cprintf("ticks: %d\n", ticks);
+	
+	
+	priority_boosting();
+        ticks = 0;
+
+        //cprintf("boosting done:)\n");
+      }
       wakeup(&ticks);
       release(&tickslock);
     }

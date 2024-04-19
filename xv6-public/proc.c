@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -20,6 +21,40 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+
+struct Queue
+{
+    struct proc *head; // head process in Queue linked list
+    struct proc *tail; // tail process in Queue linked list
+    int time_quantum;
+    int level; //0,1,2,3, 4
+    struct spinlock queueLock;
+};
+
+void initializing_Queue(void);
+void pushQueue(struct Queue *queue, struct proc *process);
+void popQueue(struct Queue *queue, struct proc *process);
+int getlev(void);
+int setpriority(int pid, int priority);
+void priority_boosting(void);
+int setmonopoly(int pid, int password);
+void monopolize(void);
+void unmonopolize(void);
+
+struct Queue L[4]; //L0 ~ L3
+struct Queue MoQ;
+
+
+//just for debugging..
+void printQueue(struct proc* process, struct Queue Q)
+{
+  cprintf("running L[%d]\n", Q.level);
+  cprintf("Queue head proc: %d\n", Q.head->pid);
+  cprintf("**process pid: %d**\n", process->pid);
+  cprintf("time quantum: %d\n", process->current_tick);
+  cprintf("\n");
+}
+  
 void
 pinit(void)
 {
@@ -88,6 +123,14 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  
+  //initializing process!!
+  p->current_tick = 0;
+  p->next = 0;
+
+  p->queue_level = -1;
+  p->priority = 0;
+  p->inMoQ = 0;
 
   release(&ptable.lock);
 
@@ -96,6 +139,7 @@ found:
     p->state = UNUSED;
     return 0;
   }
+
   sp = p->kstack + KSTACKSIZE;
 
   // Leave room for trap frame.
@@ -111,9 +155,11 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  
 
   return p;
 }
+
 
 //PAGEBREAK: 32
 // Set up first user process.
@@ -149,7 +195,7 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
-
+  pushQueue(&L[0], p); //push new process in L0
   release(&ptable.lock);
 }
 
@@ -211,11 +257,10 @@ fork(void)
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
   pid = np->pid;
-
   acquire(&ptable.lock);
-
+  
   np->state = RUNNABLE;
-
+  pushQueue(&L[0], np); //push child process in L0
   release(&ptable.lock);
 
   return pid;
@@ -275,7 +320,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -311,6 +356,7 @@ wait(void)
   }
 }
 
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -319,41 +365,149 @@ wait(void)
 //  - swtch to start running that process
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
-void
-scheduler(void)
+
+
+// check if monopolize system call is called.
+int is_monopolize_called = 0;
+
+
+void scheduler(void)
 {
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
-  
-  for(;;){
-    // Enable interrupts on this processor.
-    sti();
+    struct proc *p;
+    struct cpu *c = mycpu();
+    c->proc = 0;
+    initializing_Queue();
 
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+    for (;;)
+    {
+	sti();
+        acquire(&ptable.lock);
+	
+	if(is_monopolize_called) //when monopolize system called
+	{
+	    for(p = MoQ.head; p != 0; p = p->next) 
+	    { //find runnable process (FCFS)
+        	if (p->state == RUNNABLE)
+                    break;
+    	    }
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+    	    if (p == 0) 
+	    {  
+                release(&ptable.lock);
+                continue;
+    	    }
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+    
+    	    c->proc = p;
+    	    switchuvm(p);
+    	    p->state = RUNNING;
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
-    }
-    release(&ptable.lock);
+    	    swtch(&(c->scheduler), p->context);
+    	    switchkvm();
+    	    c->proc = 0;
+    	    
+	    if (p->state == ZOMBIE) 
+	    {
+        	popQueue(&MoQ, p);
+        	p->inMoQ = 0;
+    	    }
+	    if(MoQ.head == 0)
+                unmonopolize();
+	  
+	}
+	
+	
+        for (int i = 0; i < 3; i++) // L[0], L[1], L[2]
+        {
+            if (L[i].head != 0) //if L[i] is not empty.
+            {
+                for (p = L[i].head; p != 0; p = p->next)
+                {
+                    if (p->state != RUNNABLE) 
+                        continue;
+		    //printQueue(&L[i], p);
+                    c->proc = p;
+                    switchuvm(p);
+                    p->state = RUNNING;
+                    p->current_tick++;
+                    swtch(&(c->scheduler), p->context);
+                    switchkvm();
+                    c->proc = 0;
 
-  }
+                    if (p->state == ZOMBIE)
+                        popQueue(&L[i], p); 
+
+                    else if (p->current_tick >= L[i].time_quantum && p->state == RUNNABLE)
+                    {
+			p->current_tick = 0;
+                        
+                        if (i == 0)
+                        {
+			    popQueue(&L[0], p);
+                            if (p->pid % 2 == 0)
+                                pushQueue(&L[2], p);
+                            else if (p->pid % 2 == 1)
+                                pushQueue(&L[1], p);
+                        }
+                        else if(i == 1 || i == 2){
+                            popQueue(&L[i], p);
+			    pushQueue(&L[3], p);
+			}
+                    }
+                    
+                }
+            }
+        }
+
+	//L3 queue
+        if (L[1].head == 0 && L[2].head == 0 && L[3].head != 0)
+        {
+	    p = L[3].head;
+	    
+            //finding process with highest priority in L[3]
+            struct proc *highest_proc = L[3].head;
+	    int highest_priority = L[3].head->priority;
+            struct proc *tmp = L[3].head;
+	
+	    for (tmp = L[3].head; tmp != 0; tmp = tmp->next)
+            {
+		if(tmp->state != RUNNABLE || tmp == 0) continue;
+                if (tmp->priority > highest_priority)
+                {
+                    highest_proc = tmp;
+                    highest_priority = tmp->priority;
+                }
+            }
+            
+            p = highest_proc;
+	    //printQueue(p, L[3]);
+            
+	    c->proc = p;
+            switchuvm(p);
+            p->state = RUNNING;
+            p->current_tick++;
+            swtch(&(c->scheduler), p->context);
+            switchkvm();
+            c->proc = 0;
+
+            if (p->state == ZOMBIE)
+                popQueue(&L[3], p);
+            else if (p->current_tick >= L[3].time_quantum)
+            {
+                p->current_tick = 0;
+                if (p->priority > 0)
+                    p->priority--; 
+		    
+            }
+        }
+
+    
+        release(&ptable.lock);
+
+    } // for(;;) end
 }
+
+
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
@@ -390,6 +544,7 @@ yield(void)
   sched();
   release(&ptable.lock);
 }
+  
 
 // A fork child's very first scheduling by scheduler()
 // will swtch here.  "Return" to user space.
@@ -461,7 +616,10 @@ wakeup1(void *chan)
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     if(p->state == SLEEPING && p->chan == chan)
-      p->state = RUNNABLE;
+    {
+	p->state = RUNNABLE;
+        pushQueue(&L[0], p); //push process that wakes up to L0 queue.
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -486,8 +644,11 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING){
         p->state = RUNNABLE;
+	p->queue_level = -1;
+	pushQueue(&L[0], p); //push to L0 queue
+      } 
       release(&ptable.lock);
       return 0;
     }
@@ -531,4 +692,218 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+
+
+
+void initializing_Queue(void)
+{
+    for(int i=0; i<4; i++)
+    {
+       L[i].level = i;
+       L[i].time_quantum = 2*i+2;
+    }
+   
+    MoQ.level = 4;
+}
+
+
+void pushQueue(struct Queue *queue, struct proc *process)
+{
+    if(process->queue_level != -1)
+    {
+	//cprintf("MLFQ PUSH failed\n");
+	return;   
+    }
+ 
+    if (queue->level < 0 || queue->level > 4)
+    {
+        cprintf("MLFQ PUSH failed : level error\n");
+	return;
+    }
+
+    acquire(&queue->queueLock);
+    process->next = 0;
+    if (queue->head == 0) // when queue is empty!
+    {
+        queue->head = process;
+        queue->tail = process;
+    }
+    else // when queue is not empty, push process in tail..
+    {
+        queue->tail->next = process;
+        queue->tail = process;
+    }
+    
+    process->queue_level = queue->level;
+    
+    release(&queue->queueLock);
+}
+
+
+void popQueue(struct Queue *queue, struct proc *process)
+{
+    if (queue->level < 0 || queue->level > 4 || process->queue_level != queue->level)
+    {    
+	cprintf("POP failed: level error\n");
+	return;
+    }
+    if (queue->head == 0) //queue is empty 
+    { 
+        cprintf("POP failed : queue is empty\n");
+	return;
+    }
+	
+    acquire(&queue->queueLock);
+    if (process == queue->head) // if proces is head of queue
+    {
+	queue->head = process->next;
+        if (queue->head == 0)
+        { // this queue is empty!
+	    queue->tail = 0;
+        }
+	process->next = 0;
+    }
+    else // process is not head process.
+    {
+        struct proc *prev_proc = queue->head;
+        while (prev_proc->next != process) // find previous process in queue
+            prev_proc = prev_proc->next;
+	
+	prev_proc->next = process->next;
+        if (queue->tail == process) // this case, process may be a tail.
+            queue->tail = prev_proc;
+        
+	process->next = 0;
+    }
+    
+    process->queue_level = -1;
+    release(&queue->queueLock); 
+}
+
+
+
+// 프로세스가 속한 큐의 레벨을 반환합니다.
+// MoQ에 속한 프로세스인 경우 99를 반환합니다.
+int getlev(void)
+{
+    if(myproc()->queue_level == 4) return 99; //process in MoQ
+    return myproc()->queue_level;
+}
+
+
+
+/*특정 pid를 가지는 프로세스의 priority를 설정합니다.
+priority 설정에 성공한 경우 0을 반환합니다.
+주어진 pid를 가진 프로세스가 존재하지 않는 경우 - 1을 반환합니다.
+priority가 0 이상 10 이하의 정수가 아닌 경우 - 2를 반환합니다.*/
+int setpriority(int pid, int priority)
+{
+    if (priority > 10 || priority < 0)
+    {
+	cprintf("setpriority failed : priority range error\n");
+        return -2;
+    }
+
+    struct proc *p;
+
+    acquire(&ptable.lock);
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    {
+        if (p->pid == pid)
+        {
+            p->priority = priority;
+            release(&ptable.lock);
+            return 0;
+        }
+    }
+
+    release(&ptable.lock);
+    cprintf("setpriority failed : pid error\n");
+    return -1;
+}
+
+
+
+//priority boosting for starvation
+void priority_boosting(void)
+{
+    if(is_monopolize_called) //not activate when monopoly scheduling 
+	return;
+
+    struct proc *p;
+    acquire(&ptable.lock);
+    for(p = ptable.proc; p< &ptable.proc[NPROC]; p++)
+    {
+	if(p->queue_level == 1 || p->queue_level == 2 || p->queue_level == 3)
+	{    
+	     p->current_tick = 0;
+	     popQueue(&L[p->queue_level], p);
+	     pushQueue(&L[0], p);
+	}
+    }
+    release(&ptable.lock);
+}
+
+// 특정 pid의 프로세스를 MoQ로 이동한다. 인자로 독점 자격을 증명할 암호(학번)
+// 암호가 일치하면 MoQ의 크기 반환(MoQ 내부에 존재하는 종료되지 않은 프로세스의 개수)
+// pid가 존재하지 않은 프로세스면 -1
+// 암호가 일치하지 않으면 -2
+int setmonopoly(int pid, int password)
+{
+    if (password != 2022054702)
+    {
+	cprintf("MoQ PUSH failed : wrong password\n");
+        return -2;
+    }
+
+    acquire(&ptable.lock);
+    struct proc *p;
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    {
+        if (p->pid == pid)
+        {
+            popQueue(&L[p->queue_level], p); 
+	    p->inMoQ = 1;
+	    pushQueue(&MoQ, p); //p->queue_level = 4;
+	    
+
+            int MoQ_size = 0;
+            for (struct proc *i = MoQ.head; i != 0; i = i->next)
+            {
+                if (i->state == RUNNABLE)
+                    MoQ_size++;
+            }
+	    release(&ptable.lock);
+            return MoQ_size;
+        }
+    }
+   
+    release(&ptable.lock);
+    cprintf("MoQ PUSH faild : wrong pid\n");
+    return -1;
+}
+
+
+
+// MoQ의 프로세스가 cpu를 독점하여 사용하도록 설정한다.
+void monopolize(void)
+{
+    acquire(&MoQ.queueLock);
+    is_monopolize_called = 1; //set
+    release(&MoQ.queueLock);
+    
+}
+
+
+//exit MoQ
+void unmonopolize(void)
+{
+    acquire(&MoQ.queueLock);
+
+    is_monopolize_called = 0;
+
+    ticks = 0;
+    release(&MoQ.queueLock);
 }
