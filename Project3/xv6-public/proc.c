@@ -92,6 +92,7 @@ found:
   p->main = p; //make main thread
   p->thread_num = 1;
   p->tid = 0;
+  p->is_thread = 0;
   
   release(&ptable.lock);
 
@@ -162,18 +163,80 @@ userinit(void)
 int
 growproc(int n)
 {
+  /*uint sz;
+  struct proc *curproc = myproc();
+
+  acquire(&ptable.lock);
+  if(curproc->is_thread) {
+  	sz = curproc->parent->sz;
+        if(n > 0){
+          if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+          	return -1;
+        } else if(n < 0){
+          if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+          	return -1;
+        }
+  	curproc->parent->sz = sz;
+  }
+  else {
+  	sz = curproc->sz;
+  	if(n > 0){
+    	  if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+      	  	return -1;
+  	} else if(n < 0){
+    	  if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+      	    	return -1;
+  	}
+	curproc->sz = sz;
+  }
+
+  switchuvm(curproc);
+  return 0;*/
   uint sz;
   struct proc *curproc = myproc();
 
-  sz = curproc->sz;
-  if(n > 0){
-    if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
-      return -1;
-  } else if(n < 0){
-    if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
-      return -1;
+  acquire(&ptable.lock); // 락 획득
+  if(curproc->is_thread){
+    sz = curproc->parent->sz;
+    if(n > 0){
+      cprintf("allocuvm: start, sz=%d, n=%d\n", sz, n); // 디버깅 메시지 추가
+      if((sz = allocuvm(curproc->parent->pgdir, sz, sz + n)) == 0) {
+        cprintf("allocuvm: failed, sz=%d, n=%d\n", sz, n); // 실패 메시지 추가
+        release(&ptable.lock); // 실패 시 락 해제
+        return -1;
+      }
+    } else if(n < 0){
+      cprintf("deallocuvm: start, sz=%d, n=%d\n", sz, n); // 디버깅 메시지 추가
+      if((sz = deallocuvm(curproc->parent->pgdir, sz, sz + n)) == 0) {
+        cprintf("deallocuvm: failed, sz=%d, n=%d\n", sz, n); // 실패 메시지 추가
+        release(&ptable.lock); // 실패 시 락 해제
+        return -1;
+      }
+    }
+    curproc->parent->sz = sz;
   }
-  curproc->sz = sz;
+  else{
+    sz = curproc->sz;
+    if(n > 0){
+      cprintf("allocuvm: start, sz=%d, n=%d\n", sz, n); // 디버깅 메시지 추가
+      if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0) {
+        cprintf("allocuvm: failed, sz=%d, n=%d\n", sz, n); // 실패 메시지 추가
+        release(&ptable.lock); // 실패 시 락 해제
+        return -1;
+      }
+    } else if(n < 0){
+      cprintf("deallocuvm: start, sz=%d, n=%d\n", sz, n); // 디버깅 메시지 추가
+      if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0) {
+        cprintf("deallocuvm: failed, sz=%d, n=%d\n", sz, n); // 실패 메시지 추가
+        release(&ptable.lock); // 실패 시 락 해제
+        return -1;
+      }
+    }
+    curproc->sz = sz;
+  }
+
+  release(&ptable.lock); // 성공 시 락 해제
+
   switchuvm(curproc);
   return 0;
 }
@@ -231,13 +294,28 @@ fork(void)
 void
 exit(void)
 {
-  cprintf("hello!");
   struct proc *curproc = myproc();
   struct proc *p;
   int fd;
 
   if(curproc == initproc)
     panic("init exiting");
+
+   // Exit all threads in the process
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid == curproc->pid && p != curproc){
+      kfree(p->kstack);
+      p->kstack = 0;
+      p->pid = 0;
+      p->tid = 0;
+      p->parent = 0;
+      p->name[0] = 0;
+      p->killed = 0;
+      p->state = UNUSED;
+    }
+  }
+  release(&ptable.lock);
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
@@ -263,6 +341,29 @@ exit(void)
       p->parent = initproc;
       if(p->state == ZOMBIE)
         wakeup1(initproc);
+    }
+  }
+
+   // Terminate all threads if curproc is the main thread
+  if(curproc->main == curproc){
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->main == curproc && p != curproc){
+        // Close all open files for thread
+        for(fd = 0; fd < NOFILE; fd++){
+          if(p->ofile[fd]){
+            fileclose(p->ofile[fd]);
+            p->ofile[fd] = 0;
+          }
+        }
+        // Release the cwd for the thread
+        begin_op();
+        iput(p->cwd);
+        end_op();
+        p->cwd = 0;
+
+        // Set thread state to ZOMBIE
+        p->state = ZOMBIE;
+      }
     }
   }
 
@@ -595,7 +696,7 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   new_proc->parent = main->parent;
   new_proc->pid = main->pid;
   *new_proc->tf = *main->tf;
-
+  new_proc->is_thread = 1;
   
   main->thread_num++; //one more thread!
 
@@ -607,6 +708,7 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
 
   if (copyout(pgdir, sp, ustack, 8) < 0) {
 	cprintf("Failed : copyout\n");
+	main->sz -= 2*PGSIZE;
 	release(&ptable.lock);
 	return -1;
   }
@@ -637,15 +739,16 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
 void thread_exit(void *retval)
 {
   struct proc *curproc = myproc();
-  struct proc *p;
+  //struct proc *p;
   int fd; //file descriptor
   struct proc *main = curproc->main;
 
 
-  if (curproc == initproc) 
+  if (curproc == initproc) //초기화 프로세스 종료되지 않도록 방지
   	panic("init is exiting");
 
 
+  // fd 정리
   for(fd = 0; fd < NOFILE; fd++) {
 	if(curproc->ofile[fd]) {
 		fileclose(curproc->ofile[fd]);
@@ -653,15 +756,17 @@ void thread_exit(void *retval)
 	}
   }
 
+  // 현재 작업 디렉터리 정리
   begin_op();
   iput(curproc->cwd);
   end_op();
   curproc->cwd = 0;
 
   acquire(&ptable.lock);
-  wakeup1(main);
+  wakeup1(main); //부모 스레드 깨우기
 
   // Pass abandoned children to init.
+/*
   for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
   {
       if (p->parent == curproc)
@@ -670,12 +775,14 @@ void thread_exit(void *retval)
           if (p->state == ZOMBIE)
               wakeup1(initproc);
       }
-  }
+  }*/
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   curproc->retval = retval;
-  curproc->main->thread_num--;
+  
+  if (curproc->main != curproc) 
+	curproc->main->thread_num--;
 
   sched();
   panic("zombie exit");
@@ -691,17 +798,18 @@ int thread_join(thread_t thread, void **retval)
 {
   struct proc *p;
   struct proc *curproc = myproc();
-
+  // curproc이 우리가 기다리는 스레드의 메인스레드가 아니면 안됨
   acquire(&ptable.lock);
 
-  for (;;) {
+  for (;;) { // 종료를 기다리는 스레드가 좀비 상태인지 확인
 	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
 		if (p->tid != thread || curproc->pid != p->pid)	continue;
-		if (p->state == ZOMBIE) {
+		if (p->state == ZOMBIE) { // 자원 정리하기 
 			*retval = p->retval;
 
 			kfree(p->kstack);
             		p->kstack = 0;
+			
             		p->pid = 0;
             		p->tid = -1;
             		p->parent = 0;
@@ -710,6 +818,7 @@ int thread_join(thread_t thread, void **retval)
             		p->killed = 0;
             		p->state = UNUSED;
 			p->main = 0;
+ 			p->is_thread = 0;
 
 			release(&ptable.lock);
 			return 0;
