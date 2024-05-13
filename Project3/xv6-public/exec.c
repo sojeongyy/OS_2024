@@ -114,9 +114,26 @@ exec(char *path, char **argv)
   // we have to clean up thread..
   acquire(&ptable.lock);
   for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-      if (p != curproc && p->pid == curproc->pid) {
-          kfree(p->kstack);
+      if (p != curproc && p->pid == curproc->pid && p->pid == curproc->pid) {
+          
+  	 release(&ptable.lock);  
+	// Close all open files.
+    	 /*for(int fd = 0; fd < NOFILE; fd++){
+      	   if(p->ofile[fd]){
+        	 fileclose(p->ofile[fd]);
+          	 p->ofile[fd] = 0;
+           }
+    	 }
+	  begin_op();
+	  iput(p->cwd);
+	  end_op();
+*/
+	  acquire(&ptable.lock);
+//	  p->cwd = 0;
+
+	  kfree(p->kstack);
           p->kstack = 0;
+	  p->sz = 0;
           p->state = UNUSED;
           p->pid = 0;
           p->tid = 0;
@@ -128,6 +145,7 @@ exec(char *path, char **argv)
      }
   }
   release(&ptable.lock);
+
 
   // 기존 파일 디스크립터 닫기
   for (int fd = 0; fd < NOFILE; fd++) {

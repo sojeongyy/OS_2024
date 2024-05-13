@@ -578,13 +578,12 @@ int
 kill(int pid)
 {
   struct proc *p;
-  int found = 0; //if there is thread
 
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
       p->killed = 1;
-      found = 1;
+	found = 1;
       // Wake process from sleep if necessary.
       if(p->state == SLEEPING)
         p->state = RUNNABLE;
@@ -593,7 +592,7 @@ kill(int pid)
     }
   }
   release(&ptable.lock);
-  return found ? 0 : -1;
+  return ishaving == 1 ? 0 : -1;
 }
 
 //PAGEBREAK: 36
@@ -822,14 +821,12 @@ int thread_join(thread_t thread, void **retval)
 {
   struct proc *p;
   struct proc *curproc = myproc();
-  //int found = 0;
   // curproc이 우리가 기다리는 스레드의 메인스레드가 아니면 안됨
   acquire(&ptable.lock);
 
   for (;;) { // 종료를 기다리는 스레드가 좀비 상태인지 확인
 	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
 		if (p->tid != thread || curproc->pid != p->pid)	continue;
-		//found = 1;
 		if (p->state == ZOMBIE) { // 자원 정리하기 
 			*retval = p->retval;
 
