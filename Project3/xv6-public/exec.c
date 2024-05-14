@@ -116,20 +116,6 @@ exec(char *path, char **argv)
   for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
       if (p != curproc && p->pid == curproc->pid && p->pid == curproc->pid) {
           
-  	 release(&ptable.lock);  
-	// Close all open files.
-    	 /*for(int fd = 0; fd < NOFILE; fd++){
-      	   if(p->ofile[fd]){
-        	 fileclose(p->ofile[fd]);
-          	 p->ofile[fd] = 0;
-           }
-    	 }
-	  begin_op();
-	  iput(p->cwd);
-	  end_op();
-*/
-	  acquire(&ptable.lock);
-//	  p->cwd = 0;
 
 	  kfree(p->kstack);
           p->kstack = 0;

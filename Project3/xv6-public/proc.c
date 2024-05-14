@@ -163,74 +163,41 @@ userinit(void)
 int
 growproc(int n)
 {
-  /*uint sz;
-  struct proc *curproc = myproc();
-
-  acquire(&ptable.lock);
-  if(curproc->is_thread) {
-  	sz = curproc->parent->sz;
-        if(n > 0){
-          if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
-          	return -1;
-        } else if(n < 0){
-          if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
-          	return -1;
-        }
-  	curproc->parent->sz = sz;
-  }
-  else {
-  	sz = curproc->sz;
-  	if(n > 0){
-    	  if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
-      	  	return -1;
-  	} else if(n < 0){
-    	  if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
-      	    	return -1;
-  	}
-	curproc->sz = sz;
-  }
-
-  switchuvm(curproc);
-  return 0;*/
   uint sz;
   struct proc *curproc = myproc();
+  struct proc *main = curproc->main;
+  struct proc *p;
 
-  acquire(&ptable.lock); // 락 획득
-  if(curproc->is_thread){
-    sz = curproc->parent->sz;
-    if(n > 0){
-      if((sz = allocuvm(curproc->parent->pgdir, sz, sz + n)) == 0) {
-        release(&ptable.lock); // 실패 시 락 해제
-        return -1;
-      }
-    } else if(n < 0){
-      if((sz = deallocuvm(curproc->parent->pgdir, sz, sz + n)) == 0) {
-        release(&ptable.lock); // 실패 시 락 해제
-        return -1;
-      }
-    }
-    curproc->parent->sz = sz;
+  acquire(&ptable.lock);
+  // sz = curproc->sz;
+  if(curproc->is_thread) sz = main->sz;
+  else sz = curproc->sz;
+    
+  if(n > 0){
+        if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0){ 
+	   release(&ptable.lock);
+	   return -1;
+	}
+  } else if(n < 0){
+        if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0){
+ 	   release(&ptable.lock);
+           return -1;
+	}
   }
-  else{
-    sz = curproc->sz;
-    if(n > 0){
-      if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0) {
-        release(&ptable.lock); // 실패 시 락 해제
-        return -1;
-      }
-    } else if(n < 0){
-      if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0) {
-        release(&ptable.lock); // 실패 시 락 해제
-        return -1;
-      }
-    }
-    curproc->sz = sz;
-  }
+    
+    if(curproc->is_thread) {
+   	 main->sz = sz;
+    	// 모든 스레드에서 sz를 공유합니다.
+    	for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      		if(p->pid == curproc->pid) 
+        		p->sz = main->sz;
+    	}
+    } 	 
+    else curproc->sz = sz;
+    release(&ptable.lock);
 
-  release(&ptable.lock); // 성공 시 락 해제
-
-  switchuvm(curproc);
-  return 0;
+    switchuvm(curproc);
+    return 0;
 }
 
 // Create a new process copying p as the parent.
@@ -293,8 +260,18 @@ exit(void)
   if(curproc == initproc)
     panic("init exiting");
 
-   // Exit all threads in the process
   acquire(&ptable.lock);
+  curproc->parent = curproc->main->parent;
+  curproc->main = 0;
+  curproc->is_thread = 0;
+  for(struct proc* p = ptable.proc; p < &ptable.proc[NPROC]; ++p) {
+    if(p == curproc) continue;
+    if(p->pid == curproc->pid)
+      p->main = curproc;
+  }
+  
+   // Exit all threads in the process
+  //acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == curproc->pid && p != curproc){
       kfree(p->kstack);
@@ -336,7 +313,8 @@ exit(void)
     }
   }
 
-   // Terminate all threads if curproc is the main thread
+  /* 
+  // Terminate all threads if curproc is the main thread
   if(curproc->main == curproc){
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->main == curproc && p != curproc){
@@ -357,7 +335,7 @@ exit(void)
         p->state = ZOMBIE;
       }
     }
-  }
+  }*/
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
@@ -639,6 +617,7 @@ procdump(void)
 //start_routine: 쓰레드가 시작할 함수를 지정
 //arg: start_routine 인자
 //return: 성공적으로 만들어졌으면 0 리턴
+
 int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
 {
   struct proc *curproc = myproc();
@@ -646,7 +625,6 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   struct proc *main = curproc->main;
   uint sp, sz; //size of thread
   pde_t *pgdir;
-  //int thread_num;
 
 
   if((new_proc = allocproc()) == 0) 
@@ -654,61 +632,55 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   
   nextpid--;
 
-  acquire(&ptable.lock);
 
+  acquire(&ptable.lock);
 
   pgdir = main->pgdir;
   sz = main->sz; //stack base
   main->sz += 2*PGSIZE;
-  //thread_num = main->thread_num;
+  
   
   //from exec.c
-  // Allocate two pages at the next page boundary.
-  // Make the first inaccessible.  Use the second as the user s.
-  
   // allocate user stack!!!
   sz = PGROUNDUP(sz);
   if((sz = allocuvm(pgdir, sz, sz + 2*PGSIZE)) == 0) {// allocate
-        cprintf("Failed : allocate stack to thread\n");
+        kfree(new_proc->kstack);
+	new_proc->kstack = 0;
+	new_proc->state = UNUSED;
+	cprintf("Failed : allocate stack to thread\n");
 	release(&ptable.lock);
 	return -1;
   }
-
   clearpteu(pgdir, (char*)(sz - 2*PGSIZE));
-  sp = sz;  // change stack pointer 
   main->sz = sz; // change main thread's size
+  //allocate user stack end!  
+
+  sp = main->sz;
+  release(&ptable.lock);
 
   // New thread initialize
   // new thread share lots of things with main thread
   new_proc->pgdir = main->pgdir;
   
   new_proc->tid = main->thread_num;
+  main->thread_num++;
   *thread = new_proc->tid;  
 
   new_proc->sz = main->sz;
-  new_proc->main = main;
-  new_proc->parent = main->parent;
+  new_proc->main = (curproc->is_thread) ? curproc->main : curproc;
+  //new_proc->main = main;
+  new_proc->parent = curproc->parent;
   new_proc->pid = main->pid;
   *new_proc->tf = *main->tf;
   new_proc->is_thread = 1;
   
-  main->thread_num++; //one more thread!
 
-  // switchuvm all process with pid
-  struct proc *p;
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-	if (p->pid == main->pid) {
-		p->sz = sz;
-		switchuvm(p);
-	}
-  }
-
-  uint ustack[4];
+  uint ustack[2];
   ustack[0] = 0xffffffff;
   ustack[1] = (uint)arg;
-  sp -= 8;
+  sp -= 2*sizeof(uint);
 
-  if (copyout(pgdir, sp, ustack, 8) < 0) {
+  if (copyout(pgdir, sp, ustack, 2*sizeof(uint)) < 0) {
 	cprintf("Failed : copyout\n");
 	main->sz -= 2*PGSIZE;
 	release(&ptable.lock);
@@ -719,9 +691,120 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   new_proc->tf->eip = (uint)start_routine;
   new_proc->tf->esp = sp;
 
+  // share thread size with all threads
+  struct proc *p;
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->pid == main->pid) {
+                p->sz = sz;
+                switchuvm(p);
+        }
+  }
+
+  // copy file descriptor
   for (int i = 0; i < NOFILE; i++) {
         if (main->ofile[i])
             new_proc->ofile[i] = filedup(main->ofile[i]);  
+  }
+  new_proc->cwd = idup(main->cwd);
+
+  // set thread's name
+  safestrcpy(new_proc->name, main->name, sizeof(main->name));
+  switchuvm(curproc);
+  acquire(&ptable.lock);
+  new_proc->state = RUNNABLE;
+  release(&ptable.lock);
+
+  return 0;
+}
+/*
+//thread: 해당 주소에 스레드의 id저장
+//start_routine: 쓰레드가 시작할 함수를 지정
+//arg: start_routine 인자
+//return: 성공적으로 만들어졌으면 0 리턴
+int thread_create(thread_t *thread, void *(*start_routine)(void*), void *arg)
+{
+  struct proc *curproc = myproc();
+  struct proc *new_proc;
+  struct proc *main = curproc->main;
+  uint sp, sz; //size of thread
+  pde_t *pgdir;
+  //int thread_num;
+
+
+  if((new_proc = allocproc()) == 0)
+        return -1;
+
+  nextpid--;
+
+  acquire(&ptable.lock);
+
+
+  pgdir = main->pgdir;
+  sz = main->sz; //stack base
+  main->sz += 2*PGSIZE;
+  //thread_num = main->thread_num;
+
+  //from exec.c
+  // Allocate two pages at the next page boundary.
+  // Make the first inaccessible.  Use the second as the user s.
+
+  // allocate user stack!!!
+  sz = PGROUNDUP(sz);
+  if((sz = allocuvm(pgdir, sz, sz + 2*PGSIZE)) == 0) {// allocae
+        new_proc->state = UNUSED;
+        cprintf("Failed : allocate stack to thread\n");
+        release(&ptable.lock);
+        return -1;
+  }
+
+  clearpteu(pgdir, (char*)(sz - 2*PGSIZE));
+  sp = sz;  // change stack pointer
+  main->sz = sz; // change main thread's size
+
+
+  // New thread initialize
+  // new thread share lots of things with main thread
+  new_proc->pgdir = main->pgdir;
+
+  new_proc->tid = main->thread_num;
+  main->thread_num++;
+  *thread = new_proc->tid;
+
+  new_proc->sz = main->sz;
+  new_proc->main = main;
+  new_proc->parent = main->parent;
+  new_proc->pid = main->pid;
+  *new_proc->tf = *main->tf;
+  new_proc->is_thread = 1;
+
+
+  struct proc *p;
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->pid == main->pid) {
+                p->sz = sz;
+                switchuvm(p);
+        }
+  }
+
+  uint ustack[4];
+  ustack[0] = 0xffffffff;
+  ustack[1] = (uint)arg;
+  sp -= 8;
+
+  if (copyout(pgdir, sp, ustack, 8) < 0) {
+        cprintf("Failed : copyout\n");
+        main->sz -= 2*PGSIZE;
+        release(&ptable.lock);
+        return -1;
+  }
+
+  new_proc->tf->eax = 0;
+  new_proc->tf->eip = (uint)start_routine;
+  new_proc->tf->esp = sp;
+
+  for (int i = 0; i < NOFILE; i++) {
+        if (main->ofile[i])
+            new_proc->ofile[i] = filedup(main->ofile[i]);
   }
   new_proc->cwd = idup(main->cwd);
 
@@ -732,9 +815,7 @@ int thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   release(&ptable.lock);
 
   return 0;
-}
-
-
+}*/
 
 //thread 종료하고 값 반환
 //retval으느 쓰레드를 종료한 후 join 함수에서 받아갈 값
@@ -827,11 +908,14 @@ int thread_join(thread_t thread, void **retval)
   acquire(&ptable.lock);
 
   for (;;) { // 종료를 기다리는 스레드가 좀비 상태인지 확인
+	int found = 0;
 	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
 		if (p->tid != thread || curproc->pid != p->pid)	continue;
-		//found = 1;
+		found = 1;
 		if (p->state == ZOMBIE) { // 자원 정리하기 
-			*retval = p->retval;
+			
+			if (retval)
+			  *retval = p->retval;
 
 			kfree(p->kstack);
             		p->kstack = 0;
@@ -851,7 +935,7 @@ int thread_join(thread_t thread, void **retval)
 		}
 	}
 	
-	if(curproc->killed) {
+	if(!found || curproc->killed) {
 		release(&ptable.lock);
 		return -1;
 	}
