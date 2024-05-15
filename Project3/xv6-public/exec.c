@@ -102,46 +102,6 @@ exec(char *path, char **argv)
       last = s+1;
   safestrcpy(curproc->name, last, sizeof(curproc->name));
 
-  // make curproc new main thread!
-  if(curproc->tid > 0) { // if this thread is not main yet
-    curproc->parent = curproc->main->parent;
-    curproc->main->tid = curproc->tid;
-    curproc->tid = 0; //main thread
-    curproc->main = curproc; //this is main thread
-  }
- 
-  struct proc *p; 
-  // we have to clean up thread..
-  acquire(&ptable.lock);
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-      if (p != curproc && p->pid == curproc->pid && p->pid == curproc->pid) {
-          
-
-	  kfree(p->kstack);
-          p->kstack = 0;
-	  p->sz = 0;
-          p->state = UNUSED;
-          p->pid = 0;
-          p->tid = 0;
-          p->parent = 0;
-          p->main = 0;
-          p->name[0] = 0;
-          p->killed = 0; 
-	  
-     }
-  }
-  release(&ptable.lock);
-
-
-  // 기존 파일 디스크립터 닫기
-  for (int fd = 0; fd < NOFILE; fd++) {
-      if (curproc->ofile[fd]) {
-          fileclose(curproc->ofile[fd]);
-          curproc->ofile[i] = 0;
-      }
-  }
-
-
   // Commit to the user image.
   oldpgdir = curproc->pgdir;
   curproc->pgdir = pgdir;
