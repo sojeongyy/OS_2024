@@ -50,9 +50,11 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   
-  struct proc *main_t; // Main thread
-  thread_t tid;  // Thread id
-  void *retval;  
+  int priority; //0~10
+  int queue_level;
+  int current_tick;
+  struct proc *next;
+  int inMoQ; //is this process in MoQ??
 };
 
 // Process memory is laid out contiguously, low addresses first:
@@ -62,5 +64,3 @@ struct proc {
 //   expandable heap
 
 void priority_boosting(void);
-
-typedef int thread_t;
