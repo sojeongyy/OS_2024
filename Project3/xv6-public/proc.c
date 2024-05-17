@@ -308,9 +308,6 @@ exit(void)
     }
   }
 
-  if (curproc->main != curproc) {
-        curproc->main->thread_num--;
-  }
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
