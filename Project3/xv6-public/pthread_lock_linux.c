@@ -4,24 +4,24 @@
 int shared_resource = 0;
 
 #define NUM_ITERS 100
-#define NUM_THREADS 900
+#define NUM_THREADS 950
 
 void lock(int tid);
 void unlock(int tid);
 void init(void);
 
-typedef struct {
-  volatile int selected[NUM_THREADS]; // show if a thread can go to critical section
-  volatile int ticket[NUM_THREADS]; // thread with min ticket can go to critical section
-} mutex_t;
 
-mutex_t mutex;
+volatile int selected[NUM_THREADS]; // show if a thread can go to critical section
+volatile int ticket[NUM_THREADS]; // thread with min ticket can go to critical section
+
+
+
 
 void init(void) // mutex initializing
 {
   for (int i=0; i<NUM_THREADS; i++) {
-	mutex.selected[i] = 0;
-	mutex.ticket[i] = 0;
+	selected[i] = 0;
+	ticket[i] = 0;
   }
 }
 
@@ -36,23 +36,33 @@ int maxticket(volatile int arr[], int size)
   return max;
 }
 
-void lock(int tid)
+// show if a thread with tid has to wait
+int isWait(int i, int tid)
 {
-  mutex.selected[tid] = 1;
-  mutex.ticket[tid] = maxticket(mutex.ticket, NUM_THREADS) + 1;
-  mutex.selected[tid] = 0;
+  if (ticket[i] < ticket[tid]) return 1;
+  else if (ticket[i] == ticket[tid]) {
+	if (i < tid) return 1;
+  }
 
-  for (int i=0; i<NUM_THREADS; i++) {
-	if (i == tid) continue;
-
-	while (mutex.selected[i]); // thread i is selected! so waiting
-	while ((mutex.ticket[i] != 0) && (mutex.ticket[i] < mutex.ticket[tid] || (mutex.ticket[i] == mutex.ticket[tid] && i < tid)));
-  }   
+  return 0;
 }
 
+void lock(int tid)
+{
+  selected[tid] = 1;
+  ticket[tid] = maxticket(ticket, NUM_THREADS) + 1;
+  selected[tid] = 0;
+
+  for (int i=0; i<NUM_THREADS; i++) {
+        if (i == tid) continue;
+
+        while (selected[i]); // thread i is selected! so waiting
+        while ((ticket[i] != 0) && isWait(i, tid));
+  }
+}
 void unlock(int tid)
 {
-  mutex.ticket[tid] = 0;
+  ticket[tid] = 0;
 }
 
 void* thread_func(void* arg) {

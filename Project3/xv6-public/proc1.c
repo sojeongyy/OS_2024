@@ -823,4 +823,3 @@ int thread_join(thread_t thread, void **retval)
 	sleep(curproc, &ptable.lock);
   }
 }
-
