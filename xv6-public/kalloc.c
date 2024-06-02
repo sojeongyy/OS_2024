@@ -24,8 +24,7 @@ struct {
   struct run *freelist;
 } kmem;
 
-uint refCount[PHYSTOP / PGSIZE];
-uint count_fp;
+uint refCount[PHYSTOP / PGSIZE]; // reference count array
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -37,7 +36,6 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
-  count_fp = 0; // initialize countfp to 0
   freerange(vstart, vend);
 }
 
@@ -54,7 +52,7 @@ freerange(void *vstart, void *vend)
   char *p;
   p = (char*)PGROUNDUP((uint)vstart);
   for(; p + PGSIZE <= (char*)vend; p += PGSIZE) {
-    refCount[V2P(p) / PGSIZE] = 0; // 초기화
+    refCount[V2P(p) / PGSIZE] = 0; // initialize reference count of physical pages 
     kfree(p);
   }
 }
@@ -76,16 +74,15 @@ kfree(char *v)
 
   r = (struct run*)v;
 
-  if (refCount[V2P(v) / PGSIZE] > 0)
+  if (refCount[V2P(v) / PGSIZE] > 0) 
     refCount[V2P(v) / PGSIZE]--;
-
-  if (refCount[V2P(v) / PGSIZE] == 0) { // page free, freelist return
-    memset(v, 1, PGSIZE);
-    r->next = kmem.freelist;
-    count_fp++;
-    kmem.freelist = r;
+    
+  if (refCount[V2P(v) / PGSIZE] == 0) { // add to freelist
+      memset(v, 1, PGSIZE);
+      r->next = kmem.freelist;
+      kmem.freelist = r;
   }
-
+  
   
   if(kmem.use_lock)
     release(&kmem.lock);
@@ -101,13 +98,17 @@ kalloc(void)
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
+  
   r = kmem.freelist;
+
   if(r) {
-    kmem.freelist = r->next;
+    kmem.freelist = r->next; // not freelist anymore..
     refCount[V2P((char*)r) / PGSIZE] = 1;
   }
+
   if(kmem.use_lock)
     release(&kmem.lock);
+
   return (char*)r;
 }
 
@@ -142,6 +143,7 @@ get_refc(uint pa)
   return refCount[pa / PGSIZE];
 }
 
+// num of free pages
 int
 countfp(void)
 {
@@ -161,73 +163,41 @@ countfp(void)
   return count;
 }
 
-/*
-int
-countvp(void)
-{
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
-  uint sz = curproc->sz;
-  uint count = 0;
 
-  uint va;
-  for (va = 0; va < sz; va += PGSIZE) {
-    if (va >= KERNBASE) continue; // don't include kernel page
-  
-    pte_t *pte = walkpgdir(pgdir, (char *)va, 0);
-    if (pte && ((pte) & PTE_P) && ((pte) & PTE_U))
-      count++;
-  }
-
-  return count;
-}
-
-int
-countpp(void)
-{
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
-  uint sz = curproc->sz;
-  uint count = 0;
-
-  // look up page table
-  for (int i = 0; i < NPDENTRIES; i++) {
-    if (pgdir[i] & PTE_P)
-      count++;
-  }
-
-  return count;
-}
-*/
-
+// num of pages allocated by page table
 int
 countptp(void)
 {
   struct proc *curproc = myproc();
   pde_t *pgdir = curproc->pgdir;
+  int count = 0;
+
+  for (int i = 0; i<NPDENTRIES; i++) {
+    if (pgdir[i] & PTE_P) 
+      count++;
+  }
+  return count + 1;  // 할당된 총 페이지 수 반환
+}
+/*
+int countptp(void)
+{
+  struct proc *curproc = myproc();
+  pde_t *pgdir = curproc->pgdir;
   uint count = 0;
 
-
   for (int i = 0; i < NPDENTRIES; i++) {
-        if (pgdir[i] & PTE_P) {
-            // 페이지 디렉토리 엔트리가 유효한 경우
-            count++;  // 페이지 디렉토리 엔트리를 위해 사용된 페이지 수 증가
-
-            pte_t *pgtab = (pte_t*)P2V(PTE_ADDR(pgdir[i]));  // 페이지 테이블 주소
-
-            // 페이지 테이블 순회
-            for (int j = 0; j < NPTENTRIES; j++) {
-                if (pgtab[j] & PTE_P) {
-                    count++;  // 유효한 페이지 테이블 엔트리를 위해 사용된 페이지 수 증가
-                }
-            }
+    if (pgdir[i] & PTE_P) {
+      pte_t *pgtab = (pte_t*)P2V(PTE_ADDR(pgdir[i]));
+      for (int j = 0; j < NPTENTRIES; j++) {
+        if (pgtab[j] & PTE_P) {
+          count++;
         }
+      }
     }
-
-    return count;  // 할당된 총 페이지 수 반환
+  }
+  return count;  // 할당된 총 페이지 수 반환
 }
-
-
+*/
 
 
 

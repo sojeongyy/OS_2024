@@ -327,16 +327,16 @@ copyuvm(pde_t *pgdir, uint sz)
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
 
-    *pte &= ~PTE_W;
-    *pte |= PTE_COW;
+    *pte &= ~PTE_W; // cannot write
+    //*pte |= PTE_COW;
+    flags = PTE_FLAGS(*pte); 
     pa = PTE_ADDR(*pte);
-    flags = PTE_FLAGS(*pte);
 
-    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) { // page table mapping
       panic("copyuvm failed!");
     } 
 
-    incr_refc(pa);
+    incr_refc(pa); // child process reference
 
   }
 
@@ -390,84 +390,81 @@ CoW_handler(void)
 {
   struct proc *curproc = myproc();
   pde_t *pgdir = curproc->pgdir;
-  uint va = rcr2(); // 폴트가 발생한 가상주소
+  uint va = rcr2(); // virtual address where page fault happened
 
-  pte_t *pte = walkpgdir(pgdir, (void *)va, 0);
+  pte_t *pte = walkpgdir(pgdir, (void *)va, 0); // page entry
   uint pa = PTE_ADDR(*pte);
-  uint count = get_refc(pa);
+  int count = get_refc(pa);
 
   if (!pte || !(*pte)) {
-    panic("CoW_handler: page not found or not copy-on-write");
+    panic("CoW_handler: page not found");
   }
 
   if (va >= KERNBASE || va < 0) {
-    panic("CoW_handler: va is in kernel space");
+    panic("CoW_handler: wrong virtual address");
   }
 
-  if (count == 1) {
-    *pte |= PTE_W;
-    *pte &= ~PTE_COW;
+  if (count == 1) { // just use that page
+    *pte |= PTE_W; // can write!
+    //*pte &= ~PTE_COW;
     lcr3(V2P(pgdir));
     return;
   }
+
   else if (count > 1) { // copy
-    char *mem = kalloc();
-    if (mem == 0) {
+
+    char *new_page = kalloc(); // mem reference count = 1
+    if (new_page == 0) {
       curproc->killed = 1;
       cprintf("failed : kalloc()");
       return;
     }
     
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    *pte = PTE_U | PTE_W | PTE_P | V2P(mem);
-    *pte &= ~PTE_COW;
+    memmove(new_page, (char*)P2V(pa), PGSIZE); // copy!!
+    *pte = PTE_U | PTE_W | PTE_P | V2P(new_page);
+    //*pte &= ~PTE_COW;
     decr_refc(pa);
     
     lcr3(V2P(pgdir));
     return;   
   }
   
-  panic("CoW_handler error!");
+  else panic("CoW_handler error!");
 }
 
-
+// num of virtual pages
 int
 countvp(void)
 {
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
-  uint sz = curproc->sz;
-  uint count = 0;
-
-  uint va;
-  for (va = 0; va < sz; va += PGSIZE) {
-    if (va >= KERNBASE) continue; // don't include kernel page
-
-    pte_t *pte = walkpgdir(pgdir, (char *)va, 0);
-    if (pte && ((*pte) & PTE_P) && ((*pte) & PTE_U))
-      count++;
-  }
-
-  return count;
+  uint size = myproc()->sz;
+  int vp_num;
+  if (size % PGSIZE == 0)
+	vp_num = size / PGSIZE;
+  else
+	vp_num = size / PGSIZE + 1;
+ 
+  return vp_num;
 }
 
+// num of physical pages
 int
 countpp(void)
-{
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
-  uint sz = curproc->sz;
-  uint count = 0;
+{ 
+  pde_t *pgdir = myproc()->pgdir;
+  uint size = myproc()->sz;
+  int count = 0;
 
   // look up page table
   uint va;
-  for (va = 0; va < sz; va += PGSIZE) {
-    if (va >= KERNBASE) continue; // don't include kernel page
+  for (va = 0; va < size; va += PGSIZE) {
+    if (va >= KERNBASE) 
+	continue; // don't include kernel page
 
-    pte_t *pte = walkpgdir(pgdir, (char *)va, 0);
-    if (pte && (*pte & PTE_P))
-      count++;
+    pte_t *pte = walkpgdir(pgdir, (char*)va, 0);
+    if (pte && ((*pte) & PTE_P))
+      	count++;
   }
+
   return count;
 }
 
