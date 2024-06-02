@@ -168,36 +168,17 @@ countfp(void)
 int
 countptp(void)
 {
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
+  pde_t *pgdir = myproc()->pgdir;
   int count = 0;
 
-  for (int i = 0; i<NPDENTRIES; i++) {
+  for (int i = 0; i < NPDENTRIES; i++) { // allocated by page table
     if (pgdir[i] & PTE_P) 
       count++;
   }
-  return count + 1;  // 할당된 총 페이지 수 반환
-}
-/*
-int countptp(void)
-{
-  struct proc *curproc = myproc();
-  pde_t *pgdir = curproc->pgdir;
-  uint count = 0;
 
-  for (int i = 0; i < NPDENTRIES; i++) {
-    if (pgdir[i] & PTE_P) {
-      pte_t *pgtab = (pte_t*)P2V(PTE_ADDR(pgdir[i]));
-      for (int j = 0; j < NPTENTRIES; j++) {
-        if (pgtab[j] & PTE_P) {
-          count++;
-        }
-      }
-    }
-  }
-  return count;  // 할당된 총 페이지 수 반환
+  count++; // page used in page directory..
+  return count;
 }
-*/
 
 
 

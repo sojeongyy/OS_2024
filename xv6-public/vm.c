@@ -328,7 +328,6 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: page not present");
 
     *pte &= ~PTE_W; // cannot write
-    //*pte |= PTE_COW;
     flags = PTE_FLAGS(*pte); 
     pa = PTE_ADDR(*pte);
 
@@ -406,7 +405,6 @@ CoW_handler(void)
 
   if (count == 1) { // just use that page
     *pte |= PTE_W; // can write!
-    //*pte &= ~PTE_COW;
     lcr3(V2P(pgdir));
     return;
   }
@@ -422,7 +420,6 @@ CoW_handler(void)
     
     memmove(new_page, (char*)P2V(pa), PGSIZE); // copy!!
     *pte = PTE_U | PTE_W | PTE_P | V2P(new_page);
-    //*pte &= ~PTE_COW;
     decr_refc(pa);
     
     lcr3(V2P(pgdir));
